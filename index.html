@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Kuno - 手下げビューワー</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            z-index: 10;
+            backdrop-filter: blur(5px);
+            font-size: 14px;
+            border-left: 4px solid #ff88aa;
+        }
+        #controls-note {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255,255,255,0.6);
+            background: rgba(0,0,0,0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+        
+        /* スライダーパネルを非表示にするCSS */
+        #control-panel {
+            display: none !important;
+        }
+        
+        @media (max-width: 600px) {
+            #info { font-size: 10px; top: 10px; left: 10px; }
+            #controls-note { font-size: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <strong>Kuno </strong><br>
+        ドラッグで視点移動 | 自然に手下げ済み
+    </div>
+    <div id="controls-note">
+        🖱️ マウス/指: 回転 | 右クリック/2本指: パン | スクロール: ズーム
+    </div>
+
+    <!-- スライダーパネル（CSSで非表示になる） -->
+    <div id="control-panel">
+        <h4>🎮 ボーン角度調整</h4>
+        <div class="bone-selector">
+            <select id="boneSelect"></select>
+        </div>
+        <div class="current-bone" id="currentBoneName">ボーンを選択してください</div>
+        <div class="slider-row">
+            <label>X軸:</label>
+            <input type="range" id="rotX" min="-3.14" max="3.14" step="0.01" value="0">
+            <span id="valX" class="val">0.00</span>
+        </div>
+        <div class="slider-row">
+            <label>Y軸:</label>
+            <input type="range" id="rotY" min="-3.14" max="3.14" step="0.01" value="0">
+            <span id="valY" class="val">0.00</span>
+        </div>
+        <div class="slider-row">
+            <label>Z軸:</label>
+            <input type="range" id="rotZ" min="-3.14" max="3.14" step="0.01" value="0">
+            <span id="valZ" class="val">0.00</span>
+        </div>
+        <button id="resetBone">🔄 このボーンをリセット</button>
+        <button id="resetAll" class="reset-btn">全ボーンリセット</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111122);
+        scene.fog = new THREE.FogExp2(0x111122, 0.008);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(3, 2, 4);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.target.set(0, 1.2, 0);
+
+        // ライト
+        const ambientLight = new THREE.AmbientLight(0x404060, 0.65);
+        scene.add(ambientLight);
+        const mainLight = new THREE.DirectionalLight(0xfff5e6, 1.2);
+        mainLight.position.set(2, 3, 1.5);
+        mainLight.castShadow = true;
+        scene.add(mainLight);
+        const backLight = new THREE.PointLight(0xffaa66, 0.5);
+        backLight.position.set(-1, 1.8, -2);
+        scene.add(backLight);
+        const rimLight = new THREE.PointLight(0x88aaff, 0.6);
+        rimLight.position.set(1.5, 1.5, -1.8);
+        scene.add(rimLight);
+        const fillLight = new THREE.PointLight(0xccaa88, 0.3);
+        fillLight.position.set(0, -0.5, 1);
+        scene.add(fillLight);
+        const gridHelper = new THREE.GridHelper(8, 20, 0x88aaff, 0x335588);
+        gridHelper.position.y = -0.05;
+        gridHelper.material.transparent = true;
+        gridHelper.material.opacity = 0.4;
+        scene.add(gridHelper);
+
+        // テクスチャ
+        const textureLoader = new THREE.TextureLoader();
+        let mainTexture = null;
+        textureLoader.loadAsync('ALLTEX.png').then(tex => {
+            mainTexture = tex;
+            console.log(' テクスチャ読み込み成功');
+        }).catch(() => console.log(' テクスチャ読み込み失敗'));
+
+        // ボーン管理
+        let bones = [];
+        let currentBone = null;
+        
+        // UI要素（非表示だけど機能は生きてる）
+        const boneSelect = document.getElementById('boneSelect');
+        const rotX = document.getElementById('rotX');
+        const rotY = document.getElementById('rotY');
+        const rotZ = document.getElementById('rotZ');
+
+        function updateBoneFromSliders() {
+            if (!currentBone) return;
+            const x = parseFloat(rotX.value);
+            const y = parseFloat(rotY.value);
+            const z = parseFloat(rotZ.value);
+            currentBone.rotation.set(x, y, z);
+        }
+
+        function selectBone(boneObj) {
+            currentBone = boneObj.bone;
+            rotX.value = currentBone.rotation.x;
+            rotY.value = currentBone.rotation.y;
+            rotZ.value = currentBone.rotation.z;
+        }
+
+        function buildBoneList() {
+            boneSelect.innerHTML = '';
+            bones.forEach((boneObj, idx) => {
+                const option = document.createElement('option');
+                option.value = idx;
+                option.textContent = boneObj.name;
+                boneSelect.appendChild(option);
+            });
+            boneSelect.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.value);
+                if (!isNaN(idx) && bones[idx]) {
+                    selectBone(bones[idx]);
+                }
+            });
+            if (bones.length > 0) {
+                selectBone(bones[0]);
+                boneSelect.value = 0;
+            }
+        }
+
+        // 手下げを適用する関数（Upperarmだけ）
+        function applyHandsDown() {
+            const upperarmL = bones.find(b => b.name === 'Upperarm_L');
+            const upperarmR = bones.find(b => b.name === 'Upperarm_R');
+            
+            if (upperarmL) {
+                upperarmL.bone.rotation.x = -0.76;
+                console.log(' Upperarm_L のXを -0.76 に設定');
+            }
+            if (upperarmR) {
+                upperarmR.bone.rotation.x = -0.76;
+                console.log(' Upperarm_R のXを -0.76 に設定');
+            }
+            
+            // 現在選択中のボーンがUpperarmならスライダーも更新
+            if (currentBone && (currentBone.name === 'Upperarm_L' || currentBone.name === 'Upperarm_R')) {
+                rotX.value = -0.76;
+            }
+        }
+
+        // リセット機能（念のため残す）
+        document.getElementById('resetAll').addEventListener('click', () => {
+            bones.forEach(boneObj => {
+                boneObj.bone.rotation.set(0, 0, 0);
+            });
+            applyHandsDown(); // 手下げだけ再適用
+            console.log(' リセット＋手下げ再適用');
+        });
+
+        rotX.addEventListener('input', updateBoneFromSliders);
+        rotY.addEventListener('input', updateBoneFromSliders);
+        rotZ.addEventListener('input', updateBoneFromSliders);
+
+        // FBX読み込み
+        const loader = new FBXLoader();
+        loader.load('Kuno1.02.fbx', (object) => {
+            console.log(' Kuno読み込み成功');
+            
+            object.position.y = 0;
+            object.scale.set(1, 1, 1);
+            
+            // ボーン収集
+            object.traverse((child) => {
+                if (child.isBone) {
+                    const name = child.name;
+                    if (name && !name.includes('Root') && !name.includes('Nub')) {
+                        bones.push({
+                            name: name,
+                            bone: child
+                        });
+                    }
+                }
+            });
+            
+            console.log(` 検出されたボーン: ${bones.length}個`);
+            
+            buildBoneList();
+            
+            // 遅延させて手下げ適用（バグ回避）
+            setTimeout(() => {
+                applyHandsDown();
+            }, 200);
+            
+            // テクスチャ割り当て
+            object.traverse((child) => {
+                if (child.isMesh && child.material && mainTexture) {
+                    child.material.map = mainTexture;
+                    child.material.needsUpdate = true;
+                }
+                if (child.isMesh) child.castShadow = true;
+            });
+            
+            scene.add(object);
+            
+            setTimeout(() => {
+                const box = new THREE.Box3().setFromObject(object);
+                const center = box.getCenter(new THREE.Vector3());
+                controls.target.copy(center);
+                controls.update();
+            }, 100);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        console.log('🚀 手下げビューワー起動（スライダーは非表示）');
+    </script>
+</body>
+</html>
